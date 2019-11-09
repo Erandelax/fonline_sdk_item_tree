@@ -290,7 +290,44 @@ class StatTreeElement : TreeElement
 
 class CraftTree
 {
-    array<TreeElement@> items;
+    array<StatTreeElement@> StatTreeElements;
+    array<ToolTreeElement@> ToolTreeElements;
+    array<ItemTreeElement@> ItemTreeElements;
+
+    StatTreeElement@ GetStatTreeElement(uint id) {
+        if (this.StatTreeElements.length <= id) {
+            this.StatTreeElements.resize(1 + id);
+        }
+        if (null is this.StatTreeElements[id]) {
+            StatTreeElement element(id);
+            @this.StatTreeElements[id] = element;
+        }
+        return this.StatTreeElements[id];
+    }
+
+    ToolTreeElement@ GetToolTreeElement(uint16 pid) {
+        uint id = uint(pid);
+        if (this.ToolTreeElements.length <= id) {
+            this.ToolTreeElements.resize(1 + id);
+        }
+        if (null is this.ToolTreeElements[id]) {
+            ToolTreeElement element(GetProtoItem(pid));
+            @this.ToolTreeElements[id] = element;
+        }
+        return this.ToolTreeElements[id];
+    }
+
+    ItemTreeElement@ GetItemTreeElement(uint16 pid) {
+        uint id = uint(pid);
+        if (this.ItemTreeElements.length <= id) {
+            this.ItemTreeElements.resize(1 + id);
+        }
+        if (null is this.ItemTreeElements[id]) {
+            ItemTreeElement element(GetProtoItem(pid));
+            @this.ItemTreeElements[id] = element;
+        }
+        return this.ItemTreeElements[id];
+    }
 
     CraftTree() {
         for (uint recipeId = 0, overflow = 0; recipeId <= UINT_MAX && overflow < 1000; recipeId++) {
@@ -304,7 +341,7 @@ class CraftTree
             overflow = 0;
 
             // Extract all necessary information from the receipt
-            array<int> statIds;
+            array<uint> statIds;
             array<int> statValues;
             array<bool> statOrs;
             recipe.GetNeedParams(statIds, statValues, statOrs);
@@ -323,11 +360,24 @@ class CraftTree
             array<uint> productCounts;
             recipe.GetOutItems(productPids, productCounts);
 
-            uint name = recipe.Name;
             uint experience = recipe.Experience;
 
-            // Generate TreeItems for each recipe component and product
-            //... TODO
+            // Process recipe stats
+            for (uint i = 0, l = statIds.length; i < l; i++) {
+                StatTreeElement@ element = this.GetStatTreeElement(statIds[i]);
+            }
+            // Process recipe tools
+            for (uint i = 0, l = toolPids.length; i < l; i++) {
+                ToolTreeElement@ element = this.GetToolTreeElement(toolPids[i]);
+            }
+            // Process recipe components
+            for (uint i = 0, l = componentPids.length; i < l; i++) {
+                ItemTreeElement@ element = this.GetItemTreeElement(componentPids[i]);
+            }
+            // Process recipe products
+            for (uint i = 0, l = productPids.length; i < l; i++) {
+                ItemTreeElement@ element = this.GetItemTreeElement(productPids[i]);
+            }
         }
     }
 }
@@ -339,6 +389,7 @@ class CraftTree
 void LoadItemTree() // EXPORT
 {
     Log("++++++++++++++++++++++++++++++++++++++ LOAD ITEM TREE +++++++++++++++++++++++++++++++++++++");
+    CraftTree tree;
 }
 
 #endif // =====================================================================
