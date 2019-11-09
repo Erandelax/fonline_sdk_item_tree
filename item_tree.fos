@@ -80,6 +80,11 @@ class TreeElement
         return 1.0f;
     }
 
+    // Adds mutation
+    void AddMutation(TreeMutation@ mutation) {
+        this.TreeMutations.insertLast(mutation);
+    }
+
     // Find the total value of the element based on its mutations
     float Evaluate(array<TreeElement@> skip, FilterType mode = FilterType::Lowest)
     {
@@ -160,6 +165,8 @@ class TreeMutation
 
     // Adds product to TreeMutation
     void AddProduct(TreeElement@ product, uint count = 1) {
+        product.AddMutation(this);
+
         for (uint i = 0; i < count; i++) {
             this.Products.insertLast(product);
         }
@@ -362,22 +369,31 @@ class CraftTree
 
             uint experience = recipe.Experience;
 
+            // Create mutation for the recipe
+            TreeMutation mutation(1.0, 0.0);
+
             // Process recipe stats
             for (uint i = 0, l = statIds.length; i < l; i++) {
                 StatTreeElement@ element = this.GetStatTreeElement(statIds[i]);
+                mutation.AddComponent(element);
             }
             // Process recipe tools
             for (uint i = 0, l = toolPids.length; i < l; i++) {
                 ToolTreeElement@ element = this.GetToolTreeElement(toolPids[i]);
+                mutation.AddComponent(element, toolCounts[i]);
             }
             // Process recipe components
             for (uint i = 0, l = componentPids.length; i < l; i++) {
                 ItemTreeElement@ element = this.GetItemTreeElement(componentPids[i]);
+                mutation.AddComponent(element, componentCounts[i]);
             }
             // Process recipe products
             for (uint i = 0, l = productPids.length; i < l; i++) {
                 ItemTreeElement@ element = this.GetItemTreeElement(productPids[i]);
+                mutation.AddProduct(element, productCounts[i]);
             }
+
+            Log("Components: " + mutation.Components.length + ", Products: " + mutation.Products.length);
         }
     }
 }
