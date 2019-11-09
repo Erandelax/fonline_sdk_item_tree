@@ -8,6 +8,10 @@
 #define FLOAT_MAX (340282346600000016151267322115014000640.000000f)
 #define UINT_MAX (4294967295)
 
+string GetItemName(uint pid) {
+    return GetConstantName(1,pid) + "<" + pid + ">";
+}
+
 // Find the maximum value of the array
 float ArrayHighest(array<float> values)
 {
@@ -58,191 +62,248 @@ float Filter(array<float> values, FilterType mode) {
 
 #ifdef __SERVER // ============================================================
 
-enum TreeElementType { Element, Item, Stat, Tool, Critter }
+// REAGENT REACTION PRODUCT
+enum ReactiveType {
+    ReactiveType,
+    ReagentType,
+    ReactionType,
+    ItemReagentType,
+    ToolReagentType,
+    StatReagentType
+}
 
-class TreeElement
-{
-    array<TreeMutation@> TreeMutations;
-
-    uint8 get_Type() {
-        return TreeElementType::Element;
-    }
-
+class Reactive {
     uint get_Id() {
         return 0;
     }
 
-    float get_Value() {
+    ReactiveType get_Type() {
+        return ReactiveType::ReactiveType;
+    }
+
+    bool Is(Reactive@ reactive) {
+        return this.Id == reactive.Id && this.Type == reactive.Type;
+    }
+}
+
+class Reagent : Reactive
+{
+    array<Reaction@> Reactions;
+
+    uint get_Id() override {
+        return 0;
+    }
+
+    ReactiveType get_Type() override {
+        return ReactiveType::ReagentType;
+    }
+
+    private float get_Weight() {
         return 0.0f;
     }
 
-    float get_Coefficient() {
+    private float get_Coefficient() {
         return 1.0f;
     }
 
-    // Adds mutation
-    void AddMutation(TreeMutation@ mutation) {
-        this.TreeMutations.insertLast(mutation);
-    }
-
-    // Find the total value of the element based on its mutations
-    float Evaluate(array<TreeElement@> skip, FilterType mode = FilterType::Lowest)
-    {
-        // If there are no mutations, return the value of the element itself
-        if (this.TreeMutations.length == 0) {
-            return this.Value * this.Coefficient;
+    void AddReaction(Reaction@ reaction) {
+        if (!this.Has(reaction)) {
+            this.Reactions.insertLast(reaction);
         }
-
-        // Else attempt to filter out element value basing on mutations that are making it
-        array<float> results;
-
-        skip.insertLast(this);
-
-        for (uint i = 0, l = this.TreeMutations.length; i < l; i++) {
-            // Skip TreeMutations that contain TreeElements we are evaluating already to prevent infinite loops
-            if (this.TreeMutations[i].HasComponents(skip)) {
-                continue;
-            }
-            
-            // Get the total value of every TreeMutation
-            float value = this.TreeMutations[i].Evaluate(skip, mode);
-
-            if (0.0f != value) {
-                results.insertLast(value);
-            }
-        }
-
-        // Apply filtering function to results 
-        return Filter(results, mode);
-    }
-    
-}
-
-class TreeMutation 
-{
-    float Value;
-    float Coefficient;
-
-    array<TreeElement@> Components;
-    array<TreeElement@> Products;
-
-    TreeMutation(float coefficient = 1.0f, float value = 0.0f) 
-    {
-        this.Value = value;
-        this.Coefficient = coefficient;
     }
 
-    
-    // Returns true if owned components list has at least one of provided ones
-    bool HasComponents(array<TreeElement@> components)
-    {
-        for (uint i = 0, l = this.Components.length; i < l; i++) {
-            for (uint y = 0, m = components.length; y < m; y++) {
-                if (
-                    this.Components[i].Type == components[i].Type
-                    && this.Components[i].Id == components[i].Id
-                ) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    // Returns true if owned products list has the provided one
-    bool HasProduct(TreeElement@ product) {
-        for (uint i = 0, l = this.Products.length; i < l; i++) {
-            if (
-                this.Products[i].Id == product.Id
-                && this.Products[i].Type == product.Type
-            ) {
+    bool Has(Reactive@ reactive) {
+        for (uint i = 0, l = this.Reactions.length; i < l; i++) {
+            if (reactive.Is(this.Reactions[i])) { 
                 return true;
             }
         }
         return false;
     }
 
-    // Adds component to TreeMutation
-    void AddComponent(TreeElement@ component, uint count = 1) {
+    bool Has(array<Reactive@> reactives) {
+        for (uint i = 0, l = reactives.length; i < l; i++) {
+            if (this.Has(reactives[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    float EvaluateSelf() {
+        return this.Weight * this.Coefficient;
+    }
+
+    float Evaluate(array<Reactive@> skip, FilterType filter = FitlerType::Lowest) {
+        // 1. Check self against the skip list
+        for (uint i = 0, l = skip.length; i < l; i++) {
+            if (this.Is(skip[i])) {
+                return -1.0f; // Push up an invalid state on match
+            }
+        }
+
+        // 2. If there are no reactions leading to this product, just get the own value
+        if (0 == this.Reactions.length) {
+            return this.EvaluateSelf();
+        }
+
+        // 3. Add self to skip list
+        skip.insertLast(this);
+
+        // 4. For each reaction, find out the product value
+        array<float> values;
+        for (uint i = 0, l = this.Reactions.length; i < l; i++) {
+            // 4.1 Ask reaction to evaluate the product
+            float value = this.Reactions[i].Evaluate(this, skip, filter);
+            // 4.2 If valid value returned, add it to the list
+            if (0.0f <= value) {
+                values.insertLast(value);
+            }
+        }
+
+        // 5. If no values available, push up the invalid state
+        if (0 == values.length) {
+            return -1.0f;
+        }
+
+        // 6. Return the filtered value
+        return this.Coefficient * Filter(values, filter);
+    }
+}
+
+class Reaction : Reactive
+{
+    private uint _id;
+    
+    private float Weight;
+    private float Coefficient;
+
+    private array<Reagent@> Reagents;
+    private array<Reagent@> Products;
+
+    uint get_Id() override {
+        return this._id;
+    }
+
+    void set_Id(uint id) {
+        this._id = id;
+    }
+
+    ReactiveType get_Type() override {
+        return ReactiveType::ReactionType;
+    }
+
+    Reaction(uint id, float coefficient = 1.0f, float weight = 0.0f) {
+        this.Id = id;
+        this.Coefficient = coefficient;
+        this.Weight = weight;
+    }
+
+    void AddReagents(Reagent@ reagent, uint count = 1) {
         for (uint i = 0; i < count; i++) {
-            this.Components.insertLast(component);
+            this.Reagents.insertLast(reagent);
         }
     }
 
-    // Adds product to TreeMutation
-    void AddProduct(TreeElement@ product, uint count = 1) {
-        product.AddMutation(this);
-
+    void AddProducts(Reagent@ product, uint count = 1) {
         for (uint i = 0; i < count; i++) {
             this.Products.insertLast(product);
         }
+        product.AddReaction(this);
     }
-    
-    // Returns the total value based on every component, adds additional value and multiplies it with coefficient
-    float Evaluate(array<TreeElement@> skip, FilterType mode = FilterType::Lowest) {
+
+    bool Has(Reactive@ reactive) {
+        for (uint i = 0, l = this.Reagents.length; i < l; i++) {
+            if (reactive.Is(this.Reagents[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool Has(array<Reactive@> reactives) {
+        for (uint i = 0, l = reactives.length; i < l; i++) {
+            if (this.Has(reactives[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    float EvaluateSelf(array<Reactive@> skip, FilterType filter = FilterType::Lowest) {
         float result = 0.0f;
 
-        for (uint i = 0, l = this.Components.length; i < l; i++) {
-            result = this.Components[i].Evaluate(skip, mode);
+        // 1. Return an invalid state if current reaction is in the skip list
+        for (uint i = 0, l = skip.length; i < l; i++) {
+            if (this.Is(skip[i])) {
+                return -1.0f;
+            }
         }
 
-        result += this.Value;
+        // 2. Add self to skip list
+        skip.insertLast(this);
+
+        // 3. Ask each reagent to calculate its own value
+        for (uint i = 0, l = this.Reagents.length; i < l; i++) {
+            // Reagent should return invalid state if it believes it is in a skip list
+            float value = this.Reagents[i].Evaluate(skip, filter);
+            // If one does, push it up to skip the reaction
+            if (value < 0.0f) {
+                return value;
+            }
+            // Add reagent value to the summ
+            result += value;
+        }
+
+        // 4. Apply own values to the result
+        result += this.Weight;
         result *= this.Coefficient;
 
         return result;
     }
 
-    // Returns the value of specific product based on the total value of each component with additional value and multipliers
-    float EvaluateProduct(TreeElement@ product, array<TreeElement@> skip, FilterType mode = FilterType::Lowest)
-    {
-        // 1. Check whether TreeMutation produces the product
-        if (!this.HasProduct(product)) {
-            return 0.0f;
-        }
+    float Evaluate(Reagent@ product, array<Reactive@> skip, FilterType filter = FilterType::Lowest) {
+        // 1. Check self against the skip list, add self to it, calculate the sum of all reagents
+        float value = this.EvaluateSelf(skip, filter);
 
-        // 2. Evaluate TreeMutation based on its components
-        float value = this.Evaluate(skip, mode);
-
-        // 3. If there is only one product inside, go with it
-        if (this.Products.length <= 1) {
+        // 2. If invalid state received, push it up
+        //    If there is only one product on the output, just push up the full value as well
+        if (value < 0.0f || 1 >= this.Products.length) {
             return value;
         }
-        
-        // 4. If not, the price of specific product is defined in proportion every product inner value
-        //   Proportion is:
-        //     value{Component summ value}   :  X
-        //     summ{Components inner values} : {Single product inner value aka Value * Coefficient}
+
+        // 4. Calculate the value in proportion among other products
+        // 4.1 Calculate the "own value" summ for all products
         float summ = 0.0f;
         for (uint i = 0, l = this.Products.length; i < l; i++) {
-            summ += this.Products[i].Value * this.Products[i].Coefficient;
+            summ += this.Products[i].EvaluateSelf();
         }
-
-        if (0.0f == summ) {
-            return product.Value * product.Coefficient;
+        // 4.2 If summ is zero, push up the whole value
+        if (summ < 0.0f) {
+            return value;
         }
-
-        return value * (product.Value * product.Coefficient) / summ;
+        // 4.3 Multitply seeked product "own value" by total value and divide it by summ of "own' values"
+        return product.EvaluateSelf() * value / summ;
     }
-    
 }
 
-class ItemTreeElement : TreeElement
+class ItemReagent : Reagent
 {
     ProtoItem@ Proto;
 
-    ItemTreeElement(ProtoItem@ proto) {
+    ItemReagent(ProtoItem@ proto) {
         @this.Proto = proto;
     }
 
-    uint8 get_Type() override {
-        return TreeElementType::Item;
-    }
-
-    uint get_Id() override {
+    uint get_Id() override override {
         return uint(this.Proto.ProtoId);
     }
 
-    float get_Value() override {
+    ReactiveType get_Type() override {
+        return ReactiveType::ItemReagentType;
+    }
+
+    float get_Weight() override {
         return float(this.Proto.Cost);
     }
 
@@ -251,23 +312,23 @@ class ItemTreeElement : TreeElement
     }
 }
 
-class ToolTreeElement : TreeElement
+class ToolReagent : Reagent
 {
     ProtoItem@ Proto;
 
-    ToolTreeElement(ProtoItem@ proto) {
+    ToolReagent(ProtoItem@ proto) {
         @this.Proto = proto;
-    }
-
-    uint8 get_Type() override {
-        return TreeElementType::Tool;
     }
 
     uint get_Id() override {
         return uint(this.Proto.ProtoId);
     }
 
-    float get_Value() override {
+    ReactiveType get_Type() override {
+        return ReactiveType::ToolReagentType;
+    }
+
+    float get_Weight() override {
         return 0.0f;
     }
 
@@ -276,23 +337,23 @@ class ToolTreeElement : TreeElement
     }
 }
 
-class StatTreeElement : TreeElement
+class StatReagent : Reagent
 {
     uint Stat;
 
-    StatTreeElement(uint Stat) {
+    StatReagent(uint Stat) {
         this.Stat = Stat;
-    }
-
-    uint8 get_Type() override {
-        return TreeElementType::Stat;
     }
 
     uint get_Id() override {
         return this.Stat;
     }
 
-    float get_Value() override {
+    ReactiveType get_Type() override {
+        return ReactiveType::StatReagentType;
+    }
+
+    float get_Weight() override {
         return 0.0f;
     }
 
@@ -303,46 +364,68 @@ class StatTreeElement : TreeElement
 
 class CraftTree
 {
-    array<StatTreeElement@> StatTreeElements;
-    array<ToolTreeElement@> ToolTreeElements;
-    array<ItemTreeElement@> ItemTreeElements;
+    array<StatReagent@> StatCache;
+    array<ToolReagent@> ToolCache;
+    array<ItemReagent@> ItemCache;
 
-    StatTreeElement@ GetStatTreeElement(uint id) {
-        if (this.StatTreeElements.length <= id) {
-            this.StatTreeElements.resize(1 + id);
+    StatReagent@ GetStatReagent(uint id) {
+        if (this.StatCache.length <= id) {
+            this.StatCache.resize(1 + id);
         }
-        if (null is this.StatTreeElements[id]) {
-            StatTreeElement element(id);
-            @this.StatTreeElements[id] = element;
+        if (null is this.StatCache[id]) {
+            StatReagent reagent(id);
+            @this.StatCache[id] = reagent;
         }
-        return this.StatTreeElements[id];
+        return this.StatCache[id];
     }
 
-    ToolTreeElement@ GetToolTreeElement(uint16 pid) {
-        uint id = uint(pid);
-        if (this.ToolTreeElements.length <= id) {
-            this.ToolTreeElements.resize(1 + id);
+    ToolReagent@ GetToolReagent(uint16 protoId) {
+        uint pid = uint(protoId);
+        if (this.ToolCache.length <= pid) {
+            this.ToolCache.resize(1 + pid);
         }
-        if (null is this.ToolTreeElements[id]) {
-            ToolTreeElement element(GetProtoItem(pid));
-            @this.ToolTreeElements[id] = element;
+        if (null is this.ToolCache[pid]) {
+            ToolReagent reagent(GetProtoItem(protoId));
+            @this.ToolCache[pid] = reagent;
         }
-        return this.ToolTreeElements[id];
+        return this.ToolCache[pid];
     }
 
-    ItemTreeElement@ GetItemTreeElement(uint16 pid) {
-        uint id = uint(pid);
-        if (this.ItemTreeElements.length <= id) {
-            this.ItemTreeElements.resize(1 + id);
+    ItemReagent@ GetItemReagent(uint16 protoId) {
+        uint pid = uint(protoId);
+        if (this.ItemCache.length <= pid) {
+            this.ItemCache.resize(1 + pid);
         }
-        if (null is this.ItemTreeElements[id]) {
-            ItemTreeElement element(GetProtoItem(pid));
-            @this.ItemTreeElements[id] = element;
+        if (null is this.ItemCache[pid]) {
+            ItemReagent reagent(GetProtoItem(protoId));
+            @this.ItemCache[pid] = reagent;
         }
-        return this.ItemTreeElements[id];
+        return this.ItemCache[pid];
+    }
+
+    Reaction@ GetReaction(uint id, float coefficient = 1.0f, float weight = 0.0f) {
+        Reaction reaction(id, coefficient, weight);
+        return reaction;
+    }
+
+    float GetItemValue(uint16 protoId, FilterType filter = FilterType::Lowest) {
+        ItemReagent@ item = this.GetItemReagent(uint(protoId));
+        array<Reactive@> skip;
+        float result = item.Evaluate(skip,Lowest);
+
+        if (result < 0) {
+            result = item.EvaluateSelf();
+            Log(GetItemName(protoId)+" SELF: " + result);
+        } else {
+            Log(GetItemName(protoId)+" TREE: " + result);
+        }
+
+        return result;
     }
 
     CraftTree() {
+        array<uint16> productPidsCache;
+
         for (uint recipeId = 0, overflow = 0; recipeId <= UINT_MAX && overflow < 1000; recipeId++) {
             CraftItem@ recipe = GetCraftItem(recipeId);
             
@@ -376,30 +459,39 @@ class CraftTree
             uint experience = recipe.Experience;
 
             // Create mutation for the recipe
-            TreeMutation mutation(1.0, 0.0);
-
+            Reaction@ reaction = this.GetReaction(recipeId, 1.0, 0.0);
+            
+            /*
             // Process recipe stats
             for (uint i = 0, l = statIds.length; i < l; i++) {
-                StatTreeElement@ element = this.GetStatTreeElement(statIds[i]);
+                StatReagent@ element = this.GetStatReagent(statIds[i]);
                 mutation.AddComponent(element);
             }
             // Process recipe tools
             for (uint i = 0, l = toolPids.length; i < l; i++) {
-                ToolTreeElement@ element = this.GetToolTreeElement(toolPids[i]);
+                ToolReagent@ element = this.GetToolReagent(toolPids[i]);
                 mutation.AddComponent(element, toolCounts[i]);
-            }
+            }     
+            */
+
             // Process recipe components
             for (uint i = 0, l = componentPids.length; i < l; i++) {
-                ItemTreeElement@ element = this.GetItemTreeElement(componentPids[i]);
-                mutation.AddComponent(element, componentCounts[i]);
-            }
-            // Process recipe products
-            for (uint i = 0, l = productPids.length; i < l; i++) {
-                ItemTreeElement@ element = this.GetItemTreeElement(productPids[i]);
-                mutation.AddProduct(element, productCounts[i]);
+                ItemReagent@ reagent = this.GetItemReagent(componentPids[i]);
+                reaction.AddReagents(reagent, componentCounts[i]);
             }
 
-            Log("Components: " + mutation.Components.length + ", Products: " + mutation.Products.length);
+            // Process recipe products
+            for (uint i = 0, l = productPids.length; i < l; i++) {
+                ItemReagent@ product = this.GetItemReagent(productPids[i]);
+                reaction.AddProducts(product, productCounts[i]);
+                productPidsCache.insertLast(productPids[i]);
+            }
+        }
+
+        // Debug
+        for (uint i = 1, l = 10; i < l; i++) {
+            uint16 pid = productPidsCache[i];
+            float price = this.GetItemValue(pid);
         }
     }
 }
@@ -410,8 +502,11 @@ class CraftTree
 
 void LoadItemTree() // EXPORT
 {
-    Log("++++++++++++++++++++++++++++++++++++++ LOAD ITEM TREE +++++++++++++++++++++++++++++++++++++");
+    Log("Load item prototype prices...");
+
     CraftTree tree;
+
+    Log("Load item prototype prices complete.");
 }
 
 #endif // =====================================================================
