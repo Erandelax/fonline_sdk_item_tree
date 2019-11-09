@@ -1,0 +1,344 @@
+///////////////////////////////////////////////////////////////////////////////
+// HEADER
+///////////////////////////////////////////////////////////////////////////////
+
+#define COST_FLAG_NONE (0)
+#define COST_FLAG_BASE (1)
+
+#define FLOAT_MAX (340282346600000016151267322115014000640.000000f)
+#define UINT_MAX (4294967295)
+
+// Find the maximum value of the array
+float ArrayHighest(array<float> values)
+{
+    float result = 0.0f;
+    for (uint i = 0, l = values.length; i < l; i++) {
+        if (result < values[i]) {
+            result = values[i];
+        }
+    }
+    return result;
+}
+
+// Find the average value of the array
+float ArrayAverage(array<float> values)
+{
+    if (0 == values.length) {
+        return 0;
+    }
+
+    float summ = 0.0f;
+    for (uint i = 0, l = values.length; i < l; i++) {
+        summ += values[i];
+    }
+    return summ / float(values.length);
+}
+
+// Find the minimum value of the array
+float ArrayLowest(array<float> values)
+{
+    float result = FLOAT_MAX;
+    for (uint i = 0, l = values.length; i < l; i++) {
+        if (result > values[i]) {
+            result = values[i];
+        }
+    }
+    return FLOAT_MAX == result ? 0.0f : result;
+}
+
+// Evaluates min max or avg value of the array
+enum FilterType { Highest, Average, Lowest };
+
+float Filter(array<float> values, FilterType mode) {
+    if (FilterType::Highest == mode) return ArrayHighest(values);
+    if (FilterType::Average == mode) return ArrayAverage(values);
+    if (FilterType::Lowest == mode) return ArrayLowest(values);
+    return 0.0f;
+}
+
+#ifdef __SERVER // ============================================================
+
+enum TreeElementType { Element, Item, Stat, Tool, Critter }
+
+class TreeElement
+{
+    array<TreeMutation@> TreeMutations;
+
+    uint8 get_Type() {
+        return TreeElementType::Element;
+    }
+
+    uint get_Id() {
+        return 0;
+    }
+
+    float get_Value() {
+        return 0.0f;
+    }
+
+    float get_Coefficient() {
+        return 1.0f;
+    }
+
+    // Find the total value of the element based on its mutations
+    float Evaluate(array<TreeElement@> skip, FilterType mode = FilterType::Lowest)
+    {
+        array<float> results;
+
+        skip.insertLast(this);
+
+        for (uint i = 0, l = this.TreeMutations.length; i < l; i++) {
+            // Skip TreeMutations that contain TreeElements we are evaluating already to prevent infinite loops
+            if (this.TreeMutations[i].HasComponents(skip)) {
+                continue;
+            }
+            
+            // Get the total value of every TreeMutation
+            float value = this.TreeMutations[i].Evaluate(skip, mode);
+
+            if (0.0f != value) {
+                results.insertLast(value);
+            }
+        }
+
+        // Apply filtering function to results 
+        return Filter(results, mode);
+    }
+    
+}
+
+class TreeMutation 
+{
+    float Value;
+    float Coefficient;
+
+    array<TreeElement@> Components;
+    array<TreeElement@> Products;
+
+    TreeMutation(float coefficient = 1.0f, float value = 0.0f) 
+    {
+        this.Value = value;
+        this.Coefficient = coefficient;
+    }
+
+    
+    // Returns true if owned components list has at least one of provided ones
+    bool HasComponents(array<TreeElement@> components)
+    {
+        for (uint i = 0, l = this.Components.length; i < l; i++) {
+            for (uint y = 0, m = components.length; y < m; y++) {
+                if (
+                    this.Components[i].Type == components[i].Type
+                    && this.Components[i].Id == components[i].Id
+                ) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Returns true if owned products list has the provided one
+    bool HasProduct(TreeElement@ product) {
+        for (uint i = 0, l = this.Products.length; i < l; i++) {
+            if (
+                this.Products[i].Id == product.Id
+                && this.Products[i].Type == product.Type
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Adds component to TreeMutation
+    void AddComponent(TreeElement@ component, uint count = 1) {
+        for (uint i = 0; i < count; i++) {
+            this.Components.insertLast(component);
+        }
+    }
+
+    // Adds product to TreeMutation
+    void AddProduct(TreeElement@ product, uint count = 1) {
+        for (uint i = 0; i < count; i++) {
+            this.Products.insertLast(product);
+        }
+    }
+    
+    // Returns the total value based on every component, adds additional value and multiplies it with coefficient
+    float Evaluate(array<TreeElement@> skip, FilterType mode = FilterType::Lowest) {
+        float result = 0.0f;
+
+        for (uint i = 0, l = this.Components.length; i < l; i++) {
+            result = this.Components[i].Evaluate(skip, mode);
+        }
+
+        result += this.Value;
+        result *= this.Coefficient;
+
+        return result;
+    }
+
+    // Returns the value of specific product based on the total value of each component with additional value and multipliers
+    float EvaluateProduct(TreeElement@ product, array<TreeElement@> skip, FilterType mode = FilterType::Lowest)
+    {
+        // 1. Check whether TreeMutation produces the product
+        if (!this.HasProduct(product)) {
+            return 0.0f;
+        }
+
+        // 2. Evaluate TreeMutation based on its components
+        float value = this.Evaluate(skip, mode);
+
+        // 3. If there is only one product inside, go with it
+        if (this.Products.length <= 1) {
+            return value;
+        }
+        
+        // 4. If not, the price of specific product is defined in proportion every product inner value
+        //   Proportion is:
+        //     value{Component summ value}   :  X
+        //     summ{Components inner values} : {Single product inner value aka Value * Coefficient}
+        float summ = 0.0f;
+        for (uint i = 0, l = this.Products.length; i < l; i++) {
+            summ += this.Products[i].Value * this.Products[i].Coefficient;
+        }
+
+        if (0.0f == summ) {
+            return product.Value * product.Coefficient;
+        }
+
+        return value * (product.Value * product.Coefficient) / summ;
+    }
+    
+}
+
+class ItemTreeElement : TreeElement
+{
+    ProtoItem@ Proto;
+
+    ItemTreeElement(ProtoItem@ proto) {
+        @this.Proto = proto;
+    }
+
+    uint8 get_Type() override {
+        return TreeElementType::Item;
+    }
+
+    uint get_Id() override {
+        return uint(this.Proto.ProtoId);
+    }
+
+    float get_Value() override {
+        return float(this.Proto.Cost);
+    }
+
+    float get_Coefficient() override {
+        return 1.0f;
+    }
+}
+
+class ToolTreeElement : TreeElement
+{
+    ProtoItem@ Proto;
+
+    ToolTreeElement(ProtoItem@ proto) {
+        @this.Proto = proto;
+    }
+
+    uint8 get_Type() override {
+        return TreeElementType::Tool;
+    }
+
+    uint get_Id() override {
+        return uint(this.Proto.ProtoId);
+    }
+
+    float get_Value() override {
+        return 0.0f;
+    }
+
+    float get_Coefficient() override {
+        return 1.0f;
+    }
+}
+
+class StatTreeElement : TreeElement
+{
+    uint Stat;
+
+    StatTreeElement(uint Stat) {
+        this.Stat = Stat;
+    }
+
+    uint8 get_Type() override {
+        return TreeElementType::Stat;
+    }
+
+    uint get_Id() override {
+        return this.Stat;
+    }
+
+    float get_Value() override {
+        return 0.0f;
+    }
+
+    float get_Coefficient() override {
+        return 1.0f;
+    }
+}
+
+class CraftTree
+{
+    array<TreeElement@> items;
+
+    CraftTree() {
+        for (uint recipeId = 0, overflow = 0; recipeId <= UINT_MAX && overflow < 1000; recipeId++) {
+            CraftItem@ recipe = GetCraftItem(recipeId);
+            
+            // Loop until a gap of 1000 unassigned receipts occurs
+            if (null is recipe) {
+                overflow++;
+                continue;
+            }
+            overflow = 0;
+
+            // Extract all necessary information from the receipt
+            array<int> statIds;
+            array<int> statValues;
+            array<bool> statOrs;
+            recipe.GetNeedParams(statIds, statValues, statOrs);
+
+            array<uint16> toolPids;
+            array<uint> toolCounts;
+            array<bool> toolOrs;
+            recipe.GetNeedTools(toolPids, toolCounts, toolOrs);
+
+            array<uint16> componentPids;
+            array<uint> componentCounts;
+            array<bool> componentOrs;
+            recipe.GetNeedItems(componentPids, componentCounts, componentOrs);
+
+            array<uint16> productPids;
+            array<uint> productCounts;
+            recipe.GetOutItems(productPids, productCounts);
+
+            uint name = recipe.Name;
+            uint experience = recipe.Experience;
+
+            // Generate TreeItems for each recipe component and product
+            //... TODO
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// MODULE
+///////////////////////////////////////////////////////////////////////////////
+
+void LoadItemTree() // EXPORT
+{
+    Log("++++++++++++++++++++++++++++++++++++++ LOAD ITEM TREE +++++++++++++++++++++++++++++++++++++");
+}
+
+#endif // =====================================================================
