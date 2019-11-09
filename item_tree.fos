@@ -88,6 +88,12 @@ class TreeElement
     // Find the total value of the element based on its mutations
     float Evaluate(array<TreeElement@> skip, FilterType mode = FilterType::Lowest)
     {
+        // If there are no mutations, return the value of the element itself
+        if (this.TreeMutations.length == 0) {
+            return this.Value * this.Coefficient;
+        }
+
+        // Else attempt to filter out element value basing on mutations that are making it
         array<float> results;
 
         skip.insertLast(this);
