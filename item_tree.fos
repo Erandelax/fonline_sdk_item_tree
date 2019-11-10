@@ -8,6 +8,14 @@
 #define FLOAT_MAX (340282346600000016151267322115014000640.000000f)
 #define UINT_MAX (4294967295)
 
+uint LogTreeLevel = 0;
+void LogTree(string msg) {
+    for (uint i = 0; i < LogTreeLevel; i++) {
+        msg = " " + msg;
+    }
+    Log(msg);
+}
+
 string GetItemName(uint pid) {
     return GetConstantName(1,pid) + "<" + pid + ">";
 }
@@ -51,7 +59,7 @@ float ArrayLowest(array<float> values)
 }
 
 // Evaluates min max or avg value of the array
-enum FilterType { Highest, Average, Lowest };
+enum FilterType { None, Highest, Average, Lowest };
 
 float Filter(array<float> values, FilterType mode) {
     if (FilterType::Highest == mode) return ArrayHighest(values);
@@ -106,6 +114,14 @@ class Reagent : Reactive
         return 1.0f;
     }
 
+    float CacheValue;
+    FilterType CacheFilterType;
+
+    Reagent() {
+        this.CacheValue = 0.0f;
+        this.CacheFilterType = FilterType::None;
+    }
+
     void AddReaction(Reaction@ reaction) {
         if (!this.Has(reaction)) {
             this.Reactions.insertLast(reaction);
@@ -135,16 +151,31 @@ class Reagent : Reactive
     }
 
     float Evaluate(array<Reactive@> skip, FilterType filter = FitlerType::Lowest) {
+        LogTree("# Creating " + GetItemName(this.Id));
+        LogTreeLevel+=1;
+
+        if (this.CacheFilterType == filter) {
+            LogTreeLevel-=1;
+            LogTree("$ " + GetItemName(this.Id) + " using cached price: " + this.CacheValue);
+            return this.CacheValue;
+        }
+
         // 1. Check self against the skip list
         for (uint i = 0, l = skip.length; i < l; i++) {
             if (this.Is(skip[i])) {
+                LogTreeLevel-=1;
+                LogTree("@ Product " + GetItemName(this.Id) + " is the same we are trying to produce");
                 return -1.0f; // Push up an invalid state on match
             }
         }
 
         // 2. If there are no reactions leading to this product, just get the own value
         if (0 == this.Reactions.length) {
-            return this.EvaluateSelf();
+            LogTreeLevel-=1;
+            LogTree("! "+GetItemName(this.Id)+"Can't be created, buying for built-in price " + this.EvaluateSelf());
+            this.CacheValue = this.EvaluateSelf();
+            this.CacheFilterType = filter;
+            return this.CacheValue;
         }
 
         // 3. Add self to skip list
@@ -153,8 +184,14 @@ class Reagent : Reactive
         // 4. For each reaction, find out the product value
         array<float> values;
         for (uint i = 0, l = this.Reactions.length; i < l; i++) {
+            LogTree("# Reaction<"+this.Reactions[i].Id+"> produces " + GetItemName(this.Id));
+            this.Reactions[i].Dump();
+
             // 4.1 Ask reaction to evaluate the product
             float value = this.Reactions[i].Evaluate(this, skip, filter);
+
+            LogTree("$ Reaction<"+this.Reactions[i].Id+"> price: " + value);
+
             // 4.2 If valid value returned, add it to the list
             if (0.0f <= value) {
                 values.insertLast(value);
@@ -163,11 +200,20 @@ class Reagent : Reactive
 
         // 5. If no values available, push up the invalid state
         if (0 == values.length) {
-            return -1.0f;
+            LogTreeLevel-=1;
+            LogTree("@ Impossible to produce " + GetItemName(this.Id) + ", using default price: " + this.EvaluateSelf());
+            //return -1.0f;
+            this.CacheValue = this.EvaluateSelf();
+            this.CacheFilterType = filter;
+            return this.CacheValue;
         }
 
         // 6. Return the filtered value
-        return this.Coefficient * Filter(values, filter);
+        this.CacheValue = this.Coefficient * Filter(values, filter);
+        this.CacheFilterType = filter;
+        LogTreeLevel-=1;
+        LogTree("$ Product " + GetItemName(this.Id) + " calculated price: " + this.CacheValue);
+        return this.CacheValue;
     }
 }
 
@@ -236,6 +282,7 @@ class Reaction : Reactive
         // 1. Return an invalid state if current reaction is in the skip list
         for (uint i = 0, l = skip.length; i < l; i++) {
             if (this.Is(skip[i])) {
+                LogTree("@ Reaction<"+this.Id+" was peformed earlier");
                 return -1.0f;
             }
         }
@@ -284,6 +331,17 @@ class Reaction : Reactive
         }
         // 4.3 Multitply seeked product "own value" by total value and divide it by summ of "own' values"
         return product.EvaluateSelf() * value / summ;
+    }
+
+    void Dump() {
+        LogTree("+ Reaction<"+this.Id+">");
+        for (uint i = 0, l = this.Reagents.length; i < l; i++) {
+            LogTree("  Need: " + GetItemName(this.Reagents[i].Id));
+        }
+        for (uint i = 0, l = this.Products.length; i < l; i++) {
+            LogTree("  Produces: " + GetItemName(this.Products[i].Id));
+        }
+        LogTree("- Reaction<"+this.Id+">");
     }
 }
 
@@ -414,10 +472,10 @@ class CraftTree
         float result = item.Evaluate(skip,Lowest);
 
         if (result < 0) {
+            LogTree("$ " + GetItemName(protoId) + " has no compatible recipes, using default price: " + item.EvaluateSelf());
             result = item.EvaluateSelf();
-            Log(GetItemName(protoId)+" SELF: " + result);
         } else {
-            Log(GetItemName(protoId)+" TREE: " + result);
+            LogTree("$ " + GetItemName(protoId) + " calculated price: " + result);
         }
 
         return result;
@@ -489,10 +547,11 @@ class CraftTree
         }
 
         // Debug
-        for (uint i = 1, l = 10; i < l; i++) {
+        /*for (uint i = 1, l = 2; i < l; i++) {
             uint16 pid = productPidsCache[i];
             float price = this.GetItemValue(pid);
-        }
+        }*/
+        this.GetItemValue(377);
     }
 }
 
@@ -502,11 +561,11 @@ class CraftTree
 
 void LoadItemTree() // EXPORT
 {
-    Log("Load item prototype prices...");
+    LogTree("Load item prototype prices...");
 
     CraftTree tree;
 
-    Log("Load item prototype prices complete.");
+    LogTree("Load item prototype prices complete.");
 }
 
 #endif // =====================================================================
