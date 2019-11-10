@@ -196,6 +196,7 @@ class Reagent : Reactive
 
             // 4.2 If valid value returned, add it to the list
             if (0.0f <= value) {
+                LogTree("? Using reaction<"+this.Reactions[i].Id+"> for producing "+GetItemName(this.Id)+" with price: "+value);
                 values.insertLast(value);
             }
         }
