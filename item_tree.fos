@@ -9,7 +9,9 @@
 #define UINT_MAX (4294967295)
 
 uint LogTreeLevel = 0;
+bool LogTreeEnabled = true;
 void LogTree(string msg) {
+    if (!LogTreeEnabled) return;
     for (uint i = 0; i < LogTreeLevel; i++) {
         msg = " " + msg;
     }
@@ -426,6 +428,15 @@ class CraftTree
     array<ToolReagent@> ToolCache;
     array<ItemReagent@> ItemCache;
 
+    void Dump() {
+        for (uint i = 0, l = this.ItemCache.length; i < l; i++) {
+            if (null is this.ItemCache[i]) continue;
+            if (this.ItemCache[i].CacheFilterType != FilterType::None) {
+                Log("& " + GetItemName(this.ItemCache[i].Id)+ ": " + this.ItemCache[i].CacheValue);
+            }
+        }
+    }
+
     StatReagent@ GetStatReagent(uint id) {
         if (this.StatCache.length <= id) {
             this.StatCache.resize(1 + id);
@@ -564,6 +575,7 @@ void LoadItemTree() // EXPORT
     LogTree("Load item prototype prices...");
 
     CraftTree tree;
+    tree.Dump();
 
     LogTree("Load item prototype prices complete.");
 }
