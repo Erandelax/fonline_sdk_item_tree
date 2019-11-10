@@ -183,6 +183,8 @@ class Reagent : Reactive
         // 3. Add self to skip list
         skip.insertLast(this);
 
+        string@[] logs;
+
         // 4. For each reaction, find out the product value
         array<float> values;
         for (uint i = 0, l = this.Reactions.length; i < l; i++) {
@@ -196,9 +198,12 @@ class Reagent : Reactive
 
             // 4.2 If valid value returned, add it to the list
             if (0.0f <= value) {
-                LogTree("? Using reaction<"+this.Reactions[i].Id+"> for producing "+GetItemName(this.Id)+" with price: "+value);
+                logs.insertLast("? Using reaction<"+this.Reactions[i].Id+"> for producing "+GetItemName(this.Id)+" with price: "+value);
                 values.insertLast(value);
             }
+        }
+        for (uint i = 0; i < logs.length; i++) {
+            LogTree(logs[i]);
         }
 
         // 5. If no values available, push up the invalid state
