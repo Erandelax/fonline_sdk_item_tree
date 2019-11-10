@@ -7,6 +7,8 @@
 #define FLOAT_MAX (340282346600000016151267322115014000640.000000f)
 #define UINT_MAX (4294967295)
 
+#include "_defines.fos"
+
 // Pretty prints item pid name for logs
 string GetItemName(uint pid) {
     return "[" + pid + "] " + GetConstantName(1, pid);
@@ -175,12 +177,23 @@ class Reagent : Reactive
         return false;
     }
 
+    bool IsStatic() {
+        return false;
+    }
+
     float EvaluateSelf() {
         return this.Weight * this.Coefficient;
     }
 
     float Evaluate(array<Reactive@> skip, FilterType filter = FitlerType::Lowest) {
         TreeLog("# " + GetReactiveName(this) + ", scanning...", +1);
+
+        // PriceType=Static
+        if (this.IsStatic()) {
+            this.CacheValue = this.EvaluateSelf();
+            TreeLog("$ " + GetReactiveName(this) + " using static price: " + this.CacheValue, -1);
+            return this.CacheValue;
+        }
 
         if (this.CacheFilterType == filter) {
             TreeLog("$ " + GetReactiveName(this) + " using cached price: " + this.CacheValue, -1);
@@ -343,9 +356,12 @@ class Reaction : Reactive
         // 1. Check self against the skip list, add self to it, calculate the sum of all reagents
         float value = this.EvaluateSelf(skip, filter);
 
+        TreeLog("# Reaction<"+this.Id+"> " + GetReactiveName(product) + " evaluation, reaction price: " + value, +1);
+
         // 2. If invalid state received, push it up
         //    If there is only one product on the output, just push up the full value as well
         if (value < 0.0f || 1 >= this.Products.length) {
+            TreeLog("$ Reaction<"+this.Id+"> " + GetReactiveName(product) + " is the only product, price: " + value, -1);
             return value;
         }
 
@@ -357,10 +373,15 @@ class Reaction : Reactive
         }
         // 4.2 If summ is zero, push up the whole value
         if (summ < 0.0f) {
+            TreeLog("$ Reaction<"+this.Id+"> " + GetReactiveName(product) + " evaluation failed", -1);
             return value;
         }
+
         // 4.3 Multitply seeked product "own value" by total value and divide it by summ of "own' values"
-        return product.EvaluateSelf() * value / summ;
+        float productValue = product.EvaluateSelf();
+        float result = productValue * value / summ;
+        TreeLog("$ Reaction<"+this.Id+"> " + GetReactiveName(product) + " price: " + productValue + " x "  + value + " / " + summ+" = "+result, -1);
+        return result;
     }
 
     void Dump() {
@@ -397,6 +418,10 @@ class ItemReagent : Reagent
 
     float get_Coefficient() override {
         return 1.0f;
+    }
+
+    bool IsStatic() override {
+        return GetConstantValue(2, "Static") == this.Proto.PriceType;
     }
 }
 
@@ -474,13 +499,18 @@ class CraftTree
     array<ItemReagent@> ItemCache;
 
     void Dump() {
+        string@[] messages;
         for (uint i = 0, l = this.ItemCache.length; i < l; i++) {
             if (this.ItemCache[i] is null) {
                 continue;
             }
             uint id = this.ItemCache[i].Id;
             Log(GetItemName(id)+": $"+ceil(GetItemValue(id)));
-            TreeLog("# " + GetItemName(id)+" price: "+ceil(GetItemValue(id)));
+            
+            messages.insertLast("$ " + GetItemName(id)+" price: "+ceil(GetItemValue(id)));
+        }
+        for (uint i = 0, l = messages.length; i < l; i++) {
+            TreeLog(messages[i]);
         }
     }
 
@@ -625,7 +655,7 @@ class CraftTree
                     for (uint s = 0; s < statGroups.length; s++) {
 
                         // Spawn a new recipe
-                        Reaction@ reaction = this.GetReaction(recipeId, 1.0, 0.0);
+                        Reaction@ reaction = this.GetReaction(recipeId, 1.2, 0.0);
 
                         // Add products
                         for (uint i = 0, l = productPids.length; i < l; i++) {
@@ -669,11 +699,30 @@ class CraftTree
 // MODULE
 ///////////////////////////////////////////////////////////////////////////////
 
+import uint[][] ImportFurnaceResourceTransfer() from "furnace"; // TODO : make so it does not exist
+
 void LoadItemTree() // EXPORT
 {
     Log("Load item prototype prices...");
 
     CraftTree tree;
+    //
+    // Custom non-recipe based script stuff 
+    //
+    uint[][] furnace = ImportFurnaceResourceTransfer();
+    uint i = 1;
+
+    for (;i < furnace.length; i++) {
+        // in_type in_count out_type out_count
+        if (4 == furnace[i].length) {
+            Reaction@ reaction = tree.GetReaction(UINT_MAX - i, 1.2, 0.0);
+
+            reaction.AddReagents(tree.GetItemReagent(furnace[i][0]), furnace[i][1]);
+            reaction.AddProducts(tree.GetItemReagent(furnace[i][2]), furnace[i][3]);
+        }
+    }
+
+    // Precalculates all the prices as well
     tree.Dump();
 
     Log("Load item prototype prices complete.");
