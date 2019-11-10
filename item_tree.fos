@@ -19,7 +19,7 @@ void TreeLog(string message, int offset = 0) {
 
     string@[] line;
     for (uint i = 0; i < TreeLogOffset; i++) {
-        line.insertLast(" ");
+        line.insertLast("\t");
     }
     line.insertLast(message);
     TreeLogStorage.insertLast(join(line,""));
@@ -28,11 +28,12 @@ void TreeLog(string message, int offset = 0) {
 }
 void TreeLogCommit() {
     file f;
-    if (f.open("logs/item_prices.log","w") >= 0) {
+    if (f.open("logs/item_prices.yaml","w") >= 0) {
         for (uint i = 0; i < TreeLogStorage.length; i++) {
             f.writeString(TreeLogStorage[i] + "\n");
         }
         f.close();
+        TreeLogStorage.resize(0);
     }    
 }
 
@@ -94,6 +95,18 @@ enum ReactiveType {
     ItemReagentType,
     ToolReagentType,
     StatReagentType
+}
+
+string GetReactiveName(Reactive@ reactive) {
+    switch (reactive.Type) {
+        case StatReagentType:
+            return "[stat." + reactive.Id + "] " + GetConstantName(0, reactive.Id);
+        case ToolReagentType:
+            return "[tool." + reactive.Id + "] " + GetConstantName(1, reactive.Id);
+        case ItemReagentType:
+            return "[item." + reactive.Id + "] " + GetConstantName(1, reactive.Id);
+    }
+    return "[error:" + reactive.Id + "] UNDEFINED";
 }
 
 class Reactive {
@@ -167,24 +180,24 @@ class Reagent : Reactive
     }
 
     float Evaluate(array<Reactive@> skip, FilterType filter = FitlerType::Lowest) {
-        TreeLog("# Creating " + GetItemName(this.Id), +1);
+        TreeLog("# " + GetReactiveName(this) + ", scanning...", +1);
 
         if (this.CacheFilterType == filter) {
-            TreeLog("$ " + GetItemName(this.Id) + " using cached price: " + this.CacheValue, -1);
+            TreeLog("$ " + GetReactiveName(this) + " using cached price: " + this.CacheValue, -1);
             return this.CacheValue;
         }
 
         // 1. Check self against the skip list
         for (uint i = 0, l = skip.length; i < l; i++) {
             if (this.Is(skip[i])) {
-                TreeLog("@ Product " + GetItemName(this.Id) + " is the same we are trying to produce", -1);
+                TreeLog("@ Product " + GetReactiveName(this) + " is the same we are trying to produce", -1);
                 return -1.0f; // Push up an invalid state on match
             }
         }
 
         // 2. If there are no reactions leading to this product, just get the own value
         if (0 == this.Reactions.length) {
-            TreeLog("! "+GetItemName(this.Id)+" has no recipes, using proto cost " + this.EvaluateSelf(), -1);
+            TreeLog("$ "+GetReactiveName(this)+" has no recipes, using built-in cost " + this.EvaluateSelf(), -1);
             this.CacheValue = this.EvaluateSelf();
             this.CacheFilterType = filter;
             return this.CacheValue;
@@ -198,7 +211,7 @@ class Reagent : Reactive
         // 4. For each reaction, find out the product value
         array<float> values;
         for (uint i = 0, l = this.Reactions.length; i < l; i++) {
-            TreeLog("# Reaction<"+this.Reactions[i].Id+"> produces " + GetItemName(this.Id));
+            TreeLog("# Reaction<"+this.Reactions[i].Id+"> produces " + GetReactiveName(this));
             this.Reactions[i].Dump();
 
             // 4.1 Ask reaction to evaluate the product
@@ -208,7 +221,7 @@ class Reagent : Reactive
 
             // 4.2 If valid value returned, add it to the list
             if (0.0f <= value) {
-                logs.insertLast("? Using reaction<"+this.Reactions[i].Id+"> for producing "+GetItemName(this.Id)+" with price: "+value);
+                logs.insertLast("? Considering reaction<"+this.Reactions[i].Id+"> for producing "+GetReactiveName(this)+" with price: "+value+"...");
                 values.insertLast(value);
             }
         }
@@ -219,7 +232,7 @@ class Reagent : Reactive
 
         // 5. If no values available, push up the invalid state
         if (0 == values.length) {
-            TreeLog("@ Impossible to produce " + GetItemName(this.Id) + ", using proto cost: " + this.EvaluateSelf(), -1);
+            TreeLog("@ Impossible to produce " + GetReactiveName(this) + ", using built-in cost: " + this.EvaluateSelf(), -1);
             //return -1.0f;
             this.CacheValue = this.EvaluateSelf();
             this.CacheFilterType = filter;
@@ -229,7 +242,7 @@ class Reagent : Reactive
         // 6. Return the filtered value
         this.CacheValue = this.Coefficient * Filter(values, filter);
         this.CacheFilterType = filter;
-        TreeLog("$ Product " + GetItemName(this.Id) + " custom price: " + this.CacheValue, -1);
+        TreeLog("! Product " + GetReactiveName(this) + " picked price: " + this.CacheValue, -1);
         return this.CacheValue;
     }
 }
@@ -353,10 +366,10 @@ class Reaction : Reactive
     void Dump() {
         TreeLog("+ Reaction<"+this.Id+">", 1);
         for (uint i = 0, l = this.Reagents.length; i < l; i++) {
-            TreeLog("Requires: " + GetItemName(this.Reagents[i].Id));
+            TreeLog("- " + GetReactiveName(this.Reagents[i]));
         }
         for (uint i = 0, l = this.Products.length; i < l; i++) {
-            TreeLog("Produces: " + GetItemName(this.Products[i].Id));
+            TreeLog("+ " + GetReactiveName(this.Products[i]));
         }
         TreeLog("- Reaction<"+this.Id+">", -1);
     }
@@ -467,6 +480,7 @@ class CraftTree
             }
             uint id = this.ItemCache[i].Id;
             Log(GetItemName(id)+": $"+ceil(GetItemValue(id)));
+            TreeLog("# " + GetItemName(id)+" price: "+ceil(GetItemValue(id)));
         }
     }
 
@@ -518,10 +532,10 @@ class CraftTree
         float result = item.Evaluate(skip,Lowest);
 
         if (result < 0) {
-            TreeLog("$ " + GetItemName(protoId) + " has no recipes, using proto cost: " + item.EvaluateSelf());
+            TreeLog("$ " + GetReactiveName(item) + " has no recipes, using built-in cost: " + item.EvaluateSelf());
             result = item.EvaluateSelf();
         } else {
-            TreeLog("$ " + GetItemName(protoId) + " custom price: " + result);
+            TreeLog("$ " + GetReactiveName(item) + " custom price: " + result);
         }
 
         return result;
