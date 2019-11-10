@@ -1,25 +1,39 @@
 ///////////////////////////////////////////////////////////////////////////////
 // HEADER
 ///////////////////////////////////////////////////////////////////////////////
-
 #define COST_FLAG_NONE (0)
 #define COST_FLAG_BASE (1)
 
 #define FLOAT_MAX (340282346600000016151267322115014000640.000000f)
 #define UINT_MAX (4294967295)
 
-uint LogTreeLevel = 0;
-bool LogTreeEnabled = true;
-void LogTree(string msg) {
-    if (!LogTreeEnabled) return;
-    for (uint i = 0; i < LogTreeLevel; i++) {
-        msg = " " + msg;
-    }
-    Log(msg);
+// Pretty prints item pid name for logs
+string GetItemName(uint pid) {
+    return "[" + pid + "] " + GetConstantName(1, pid);
 }
 
-string GetItemName(uint pid) {
-    return GetConstantName(1,pid) + "<" + pid + ">";
+uint TreeLogOffset = 0;
+array<string> TreeLogStorage;
+void TreeLog(string message, int offset = 0) {
+    if (offset < 0) TreeLogOffset += offset;
+
+    string@[] line;
+    for (uint i = 0; i < TreeLogOffset; i++) {
+        line.insertLast(" ");
+    }
+    line.insertLast(message);
+    TreeLogStorage.insertLast(join(line,""));
+
+    if (offset > 0) TreeLogOffset += offset;
+}
+void TreeLogCommit() {
+    file f;
+    if (f.open("logs/item_prices.log","w") >= 0) {
+        for (uint i = 0; i < TreeLogStorage.length; i++) {
+            f.writeString(TreeLogStorage[i] + "\n");
+        }
+        f.close();
+    }    
 }
 
 // Find the maximum value of the array
@@ -153,28 +167,24 @@ class Reagent : Reactive
     }
 
     float Evaluate(array<Reactive@> skip, FilterType filter = FitlerType::Lowest) {
-        LogTree("# Creating " + GetItemName(this.Id));
-        LogTreeLevel+=1;
+        TreeLog("# Creating " + GetItemName(this.Id), +1);
 
         if (this.CacheFilterType == filter) {
-            LogTreeLevel-=1;
-            LogTree("$ " + GetItemName(this.Id) + " using cached price: " + this.CacheValue);
+            TreeLog("$ " + GetItemName(this.Id) + " using cached price: " + this.CacheValue, -1);
             return this.CacheValue;
         }
 
         // 1. Check self against the skip list
         for (uint i = 0, l = skip.length; i < l; i++) {
             if (this.Is(skip[i])) {
-                LogTreeLevel-=1;
-                LogTree("@ Product " + GetItemName(this.Id) + " is the same we are trying to produce");
+                TreeLog("@ Product " + GetItemName(this.Id) + " is the same we are trying to produce", -1);
                 return -1.0f; // Push up an invalid state on match
             }
         }
 
         // 2. If there are no reactions leading to this product, just get the own value
         if (0 == this.Reactions.length) {
-            LogTreeLevel-=1;
-            LogTree("! "+GetItemName(this.Id)+"Can't be created, buying for built-in price " + this.EvaluateSelf());
+            TreeLog("! "+GetItemName(this.Id)+" has no recipes, using proto cost " + this.EvaluateSelf(), -1);
             this.CacheValue = this.EvaluateSelf();
             this.CacheFilterType = filter;
             return this.CacheValue;
@@ -188,13 +198,13 @@ class Reagent : Reactive
         // 4. For each reaction, find out the product value
         array<float> values;
         for (uint i = 0, l = this.Reactions.length; i < l; i++) {
-            LogTree("# Reaction<"+this.Reactions[i].Id+"> produces " + GetItemName(this.Id));
+            TreeLog("# Reaction<"+this.Reactions[i].Id+"> produces " + GetItemName(this.Id));
             this.Reactions[i].Dump();
 
             // 4.1 Ask reaction to evaluate the product
             float value = this.Reactions[i].Evaluate(this, skip, filter);
 
-            LogTree("$ Reaction<"+this.Reactions[i].Id+"> price: " + value);
+            TreeLog("$ Reaction<"+this.Reactions[i].Id+"> price: " + value);
 
             // 4.2 If valid value returned, add it to the list
             if (0.0f <= value) {
@@ -202,14 +212,14 @@ class Reagent : Reactive
                 values.insertLast(value);
             }
         }
+        
         for (uint i = 0; i < logs.length; i++) {
-            LogTree(logs[i]);
+            TreeLog(logs[i]);
         }
 
         // 5. If no values available, push up the invalid state
         if (0 == values.length) {
-            LogTreeLevel-=1;
-            LogTree("@ Impossible to produce " + GetItemName(this.Id) + ", using default price: " + this.EvaluateSelf());
+            TreeLog("@ Impossible to produce " + GetItemName(this.Id) + ", using proto cost: " + this.EvaluateSelf(), -1);
             //return -1.0f;
             this.CacheValue = this.EvaluateSelf();
             this.CacheFilterType = filter;
@@ -219,8 +229,7 @@ class Reagent : Reactive
         // 6. Return the filtered value
         this.CacheValue = this.Coefficient * Filter(values, filter);
         this.CacheFilterType = filter;
-        LogTreeLevel-=1;
-        LogTree("$ Product " + GetItemName(this.Id) + " calculated price: " + this.CacheValue);
+        TreeLog("$ Product " + GetItemName(this.Id) + " custom price: " + this.CacheValue, -1);
         return this.CacheValue;
     }
 }
@@ -290,7 +299,7 @@ class Reaction : Reactive
         // 1. Return an invalid state if current reaction is in the skip list
         for (uint i = 0, l = skip.length; i < l; i++) {
             if (this.Is(skip[i])) {
-                LogTree("@ Reaction<"+this.Id+" was peformed earlier");
+                TreeLog("@ Reaction<"+this.Id+" was peformed earlier");
                 return -1.0f;
             }
         }
@@ -342,14 +351,14 @@ class Reaction : Reactive
     }
 
     void Dump() {
-        LogTree("+ Reaction<"+this.Id+">");
+        TreeLog("+ Reaction<"+this.Id+">", 1);
         for (uint i = 0, l = this.Reagents.length; i < l; i++) {
-            LogTree("  Need: " + GetItemName(this.Reagents[i].Id));
+            TreeLog("Requires: " + GetItemName(this.Reagents[i].Id));
         }
         for (uint i = 0, l = this.Products.length; i < l; i++) {
-            LogTree("  Produces: " + GetItemName(this.Products[i].Id));
+            TreeLog("Produces: " + GetItemName(this.Products[i].Id));
         }
-        LogTree("- Reaction<"+this.Id+">");
+        TreeLog("- Reaction<"+this.Id+">", -1);
     }
 }
 
@@ -382,8 +391,14 @@ class ToolReagent : Reagent
 {
     ProtoItem@ Proto;
 
+    float _weight;
+    float _coefficient;
+
     ToolReagent(ProtoItem@ proto) {
         @this.Proto = proto;
+        this._weight = 0.0f;
+        //this._weight = float(proto.Cost) * 0.05f;
+        this._coefficient = 1.0f;
     }
 
     uint get_Id() override {
@@ -395,20 +410,30 @@ class ToolReagent : Reagent
     }
 
     float get_Weight() override {
-        return 0.0f;
+        return this._weight;
+    }
+
+    void set_Weight(float value) {
+        this._weight = value;
     }
 
     float get_Coefficient() override {
-        return 1.0f;
+        return this._coefficient;
+    }
+
+    void set_Coefficient(float value) {
+        this._coefficient = value;
     }
 }
 
 class StatReagent : Reagent
 {
     uint Stat;
+    uint Value;
 
-    StatReagent(uint Stat) {
-        this.Stat = Stat;
+    StatReagent(uint stat, uint value = 0) {
+        this.Stat = stat;
+        this.Value = value;
     }
 
     uint get_Id() override {
@@ -420,6 +445,7 @@ class StatReagent : Reagent
     }
 
     float get_Weight() override {
+        //return float(this.Value < 0 ? 0 : this.Value); // Uncoment to add stats to value
         return 0.0f;
     }
 
@@ -436,22 +462,25 @@ class CraftTree
 
     void Dump() {
         for (uint i = 0, l = this.ItemCache.length; i < l; i++) {
-            if (null is this.ItemCache[i]) continue;
-            if (this.ItemCache[i].CacheFilterType != FilterType::None) {
-                Log("& " + GetItemName(this.ItemCache[i].Id)+ ": " + this.ItemCache[i].CacheValue);
+            if (this.ItemCache[i] is null) {
+                continue;
             }
+            uint id = this.ItemCache[i].Id;
+            Log(GetItemName(id)+": $"+ceil(GetItemValue(id)));
         }
     }
 
-    StatReagent@ GetStatReagent(uint id) {
-        if (this.StatCache.length <= id) {
+    StatReagent@ GetStatReagent(uint id, uint value = 0) {
+        StatReagent reagent(id,value);
+        return reagent;
+        /*if (this.StatCache.length <= id) {
             this.StatCache.resize(1 + id);
         }
         if (null is this.StatCache[id]) {
             StatReagent reagent(id);
             @this.StatCache[id] = reagent;
         }
-        return this.StatCache[id];
+        return this.StatCache[id];*/
     }
 
     ToolReagent@ GetToolReagent(uint16 protoId) {
@@ -489,21 +518,19 @@ class CraftTree
         float result = item.Evaluate(skip,Lowest);
 
         if (result < 0) {
-            LogTree("$ " + GetItemName(protoId) + " has no compatible recipes, using default price: " + item.EvaluateSelf());
+            TreeLog("$ " + GetItemName(protoId) + " has no recipes, using proto cost: " + item.EvaluateSelf());
             result = item.EvaluateSelf();
         } else {
-            LogTree("$ " + GetItemName(protoId) + " calculated price: " + result);
+            TreeLog("$ " + GetItemName(protoId) + " custom price: " + result);
         }
 
         return result;
     }
 
     CraftTree() {
-        array<uint16> productPidsCache;
-
         for (uint recipeId = 0, overflow = 0; recipeId <= UINT_MAX && overflow < 1000; recipeId++) {
             CraftItem@ recipe = GetCraftItem(recipeId);
-            
+          
             // Loop until a gap of 1000 unassigned receipts occurs
             if (null is recipe) {
                 overflow++;
@@ -516,16 +543,62 @@ class CraftTree
             array<int> statValues;
             array<bool> statOrs;
             recipe.GetNeedParams(statIds, statValues, statOrs);
+            array<array<uint>> statGroups;
+            array<uint> statGroup;
+            for (uint i = 0; i < statOrs.length && i < statIds.length; i++) {
+                statGroup.insertLast(i);
+
+                if (statOrs[i]) {
+                    if (statGroup.length > 0) {
+                        statGroups.insertLast(statGroup);
+                    }
+                    statGroup.resize(0);
+                }
+            }
+            if (statGroup.length > 0) {
+                statGroups.insertLast(statGroup);
+            }
 
             array<uint16> toolPids;
             array<uint> toolCounts;
             array<bool> toolOrs;
             recipe.GetNeedTools(toolPids, toolCounts, toolOrs);
+            array<array<uint>> toolGroups;
+            array<uint> toolGroup;
+            for (uint i = 0; i < toolOrs.length && i < toolPids.length; i++) {
+                toolGroup.insertLast(i);
+
+                if (toolOrs[i]) {
+                    if (toolGroup.length > 0) {
+                        toolGroups.insertLast(toolGroup);
+                    }
+                    toolGroup.resize(0);
+                }
+            }
+            if (toolGroup.length > 0) {
+                toolGroups.insertLast(toolGroup);
+            }
 
             array<uint16> componentPids;
             array<uint> componentCounts;
-            array<bool> componentOrs;
+            array<bool> componentOrs; // if componentOrs[1] == true it means recipe is like "0 & 1 | 2"
             recipe.GetNeedItems(componentPids, componentCounts, componentOrs);
+            array<array<uint>> componentGroups;
+            array<uint> componentGroup;
+            for (uint i = 0; i < componentOrs.length && i < componentPids.length; i++) {
+                componentGroup.insertLast(i);
+
+                if (componentOrs[i]) {
+                    if (componentGroup.length > 0) {
+                        componentGroups.insertLast(componentGroup);
+                    }
+                    componentGroup.resize(0);
+                }
+            }
+            if (componentGroup.length > 0) {
+                componentGroups.insertLast(componentGroup);
+                componentGroup.resize(0);
+            }
 
             array<uint16> productPids;
             array<uint> productCounts;
@@ -533,42 +606,48 @@ class CraftTree
 
             uint experience = recipe.Experience;
 
-            // Create mutation for the recipe
-            Reaction@ reaction = this.GetReaction(recipeId, 1.0, 0.0);
-            
-            /*
-            // Process recipe stats
-            for (uint i = 0, l = statIds.length; i < l; i++) {
-                StatReagent@ element = this.GetStatReagent(statIds[i]);
-                mutation.AddComponent(element);
-            }
-            // Process recipe tools
-            for (uint i = 0, l = toolPids.length; i < l; i++) {
-                ToolReagent@ element = this.GetToolReagent(toolPids[i]);
-                mutation.AddComponent(element, toolCounts[i]);
-            }     
-            */
+            for (uint c = 0; c < componentGroups.length; c++) {
+                for (uint t = 0; t < toolGroups.length; t++) {
+                    for (uint s = 0; s < statGroups.length; s++) {
 
-            // Process recipe components
-            for (uint i = 0, l = componentPids.length; i < l; i++) {
-                ItemReagent@ reagent = this.GetItemReagent(componentPids[i]);
-                reaction.AddReagents(reagent, componentCounts[i]);
-            }
+                        // Spawn a new recipe
+                        Reaction@ reaction = this.GetReaction(recipeId, 1.0, 0.0);
 
-            // Process recipe products
-            for (uint i = 0, l = productPids.length; i < l; i++) {
-                ItemReagent@ product = this.GetItemReagent(productPids[i]);
-                reaction.AddProducts(product, productCounts[i]);
-                productPidsCache.insertLast(productPids[i]);
+                        // Add products
+                        for (uint i = 0, l = productPids.length; i < l; i++) {
+                            reaction.AddProducts(
+                                this.GetItemReagent(productPids[i]), 
+                                productCounts[i]
+                            );
+                        }
+
+                        // Add components
+                        for (uint i = 0; i < componentGroups[c].length; i++) {
+                            reaction.AddReagents(
+                                this.GetItemReagent(componentPids[componentGroups[c][i]]), 
+                                componentCounts[i]
+                            );
+                        }
+
+                        // Add tools
+                        for (uint i = 0; i < toolGroups[t].length; i++) {
+                            reaction.AddReagents(
+                                this.GetToolReagent(toolPids[toolGroups[t][i]]),
+                                toolCounts[i]
+                            );
+                        }
+
+                        // Add stats
+                        for (uint i = 0; i < statGroups[s].length; i++) {
+                            reaction.AddReagents(
+                                this.GetStatReagent(statIds[statGroups[s][i]]), 
+                                1
+                            );
+                        }
+                    }
+                }
             }
         }
-
-        // Debug
-        /*for (uint i = 1, l = 2; i < l; i++) {
-            uint16 pid = productPidsCache[i];
-            float price = this.GetItemValue(pid);
-        }*/
-        this.GetItemValue(377);
     }
 }
 
@@ -578,12 +657,14 @@ class CraftTree
 
 void LoadItemTree() // EXPORT
 {
-    LogTree("Load item prototype prices...");
+    Log("Load item prototype prices...");
 
     CraftTree tree;
     tree.Dump();
 
-    LogTree("Load item prototype prices complete.");
+    Log("Load item prototype prices complete.");
+
+    TreeLogCommit();
 }
 
 #endif // =====================================================================
