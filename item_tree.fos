@@ -682,12 +682,18 @@ class CraftTree
 
             uint experience = recipe.Experience;
 
+            array<float> componentLengths;
+            array<Reaction@> localReactions;
+
             for (uint c = 0; c < componentGroups.length; c++) {
+                componentLengths.insertLast(float(componentGroups[c].length));
+
                 for (uint t = 0; t < toolGroups.length; t++) {
                     for (uint s = 0; s < statGroups.length; s++) {
 
                         // Spawn a new recipe
                         Reaction@ reaction = this.GetReaction(newRecipeId++, recipeId, 1.2, 0.0);
+                        localReactions.insertLast(reaction);
 
                         // Add products
                         for (uint i = 0, l = productPids.length; i < l; i++) {
@@ -722,10 +728,14 @@ class CraftTree
                         }
 
                         // CUSTOM: if there are only one type of component, use 1.1 coefficient
-                        if (productPids.length == 1) {
-                            reaction.Coefficient = 1.1;
-                        }
+                        
                     }
+                }
+            }
+
+            if (ArrayHighest(componentLengths) == 1.0f) {
+                for (uint i = 0; i < localReactions.length; i++) {
+                    localReactions[i].Coefficient = 1.1f;
                 }
             }
         }
