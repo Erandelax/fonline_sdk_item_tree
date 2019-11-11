@@ -9,9 +9,76 @@
 
 #include "_defines.fos"
 
+// Transforms {A|B|C & E & F|G & H} into A E F H
+//            {1 1 0   0   1 0   1}      B E F H
+    //                                   C E F H
+    //                                   A E G H
+    //                                   B E G H
+    //                                   C E G H
+array<array<uint>> GetGroupsFromOrs(array<uint> pids, array<bool> ors) {
+    // 1. Transform {A|B|C&E&F|G&H} into A E F H
+    //              {1 1 0 0 1 0 0}      B   G
+    //                                   C
+    array<array<uint>> columns;
+    for (uint i = 0, y = 0; i < pids.length; i++) {
+        if (columns.length <= y) {
+            columns.resize(y + 1);
+        }
+
+        columns[y].insertLast(i);
+
+        if (false == ors[i]) {
+            y++;
+        }
+    }
+
+    // 2. Transform A E F H into A E F H 
+    //              B   G        B E F H
+    //              C            C E F H
+    //                           A E G H
+    //                           B E G H
+    //                           C E G H
+    array<array<uint>> rows;
+    for (uint column = 0; column < columns.length; column++) {
+        if (0 == column) {
+            //rows.resize(columns[0].length);
+            for (uint i = 0; i < columns[0].length; i++) {
+                //rows[i].insertLast(columns[0][i]);
+                rows.resize(i + 1);
+                rows[i].insertLast(columns[0][i]);
+            }
+        } else {
+            uint m = rows.length;
+            // Add new index to every of existing rows
+            for (uint i = 0; i < m; i++) {
+                rows[i].insertLast(columns[column][0]);
+            }
+            // For every extra id, clone the set of existing rows and set last item to new id
+            if (columns[column].length > 1) {
+                for (uint z = 1; z < columns[column].length; z++) {
+                    for (uint y = 0; y < m; y++) {
+                        rows.insertLast(rows[y]);
+                        rows[rows.length - 1][rows[rows.length - 1].length - 1] = columns[column][z];
+                    }
+                }
+            }
+        }
+    }
+
+    return rows;
+}
+
+array<array<uint>> GetGroupsFromOrs(array<uint16> pids, array<bool> ors) {
+    array<uint> ids;
+    for (uint i = 0; i < pids.length; i++) {
+        ids.insertLast(uint(pids[i]));
+    }
+    return GetGroupsFromOrs(ids, ors);
+}
+
 // Pretty prints item pid name for logs
 string GetItemName(uint pid) {
-    return "[" + pid + "] " + GetConstantName(1, pid);
+    return "[" + pid + "]\t" + GetConstantName(1, pid);
 }
 
 uint TreeLogOffset = 0;
@@ -109,6 +176,10 @@ string GetReactiveName(Reactive@ reactive) {
             return "[item." + reactive.Id + "] " + GetConstantName(1, reactive.Id);
     }
     return "[error:" + reactive.Id + "] UNDEFINED";
+}
+
+string GetReactionName(Reaction@ reaction) {
+    return "Reaction<" + reaction.Group + ":" + reaction.Id + ">";
 }
 
 class Reactive {
@@ -224,17 +295,17 @@ class Reagent : Reactive
         // 4. For each reaction, find out the product value
         array<float> values;
         for (uint i = 0, l = this.Reactions.length; i < l; i++) {
-            TreeLog("# Reaction<"+this.Reactions[i].Id+"> produces " + GetReactiveName(this));
+            TreeLog("# "+GetReactionName(this.Reactions[i])+" produces " + GetReactiveName(this));
             this.Reactions[i].Dump();
 
             // 4.1 Ask reaction to evaluate the product
             float value = this.Reactions[i].Evaluate(this, skip, filter);
 
-            TreeLog("$ Reaction<"+this.Reactions[i].Id+"> price: " + value);
+            TreeLog("$ "+GetReactionName(this.Reactions[i])+" price: " + value);
 
             // 4.2 If valid value returned, add it to the list
             if (0.0f <= value) {
-                logs.insertLast("? Considering reaction<"+this.Reactions[i].Id+"> for producing "+GetReactiveName(this)+" with price: "+value+"...");
+                logs.insertLast("? Considering "+GetReactionName(this.Reactions[i])+" for producing "+GetReactiveName(this)+" with price: "+value+"...");
                 values.insertLast(value);
             }
         }
@@ -263,12 +334,14 @@ class Reagent : Reactive
 class Reaction : Reactive
 {
     private uint _id;
-    
-    private float Weight;
-    private float Coefficient;
 
-    private array<Reagent@> Reagents;
-    private array<Reagent@> Products;
+    uint Group;
+    
+    float Weight;
+    float Coefficient;
+
+    array<Reagent@> Reagents;
+    array<Reagent@> Products;
 
     uint get_Id() override {
         return this._id;
@@ -282,10 +355,11 @@ class Reaction : Reactive
         return ReactiveType::ReactionType;
     }
 
-    Reaction(uint id, float coefficient = 1.0f, float weight = 0.0f) {
+    Reaction(uint id, uint group, float coefficient = 1.0f, float weight = 0.0f) {
         this.Id = id;
         this.Coefficient = coefficient;
         this.Weight = weight;
+        this.Group = group;
     }
 
     void AddReagents(Reagent@ reagent, uint count = 1) {
@@ -325,7 +399,7 @@ class Reaction : Reactive
         // 1. Return an invalid state if current reaction is in the skip list
         for (uint i = 0, l = skip.length; i < l; i++) {
             if (this.Is(skip[i])) {
-                TreeLog("@ Reaction<"+this.Id+" was peformed earlier");
+                TreeLog("@ "+GetReactionName(this)+" was peformed earlier");
                 return -1.0f;
             }
         }
@@ -356,12 +430,12 @@ class Reaction : Reactive
         // 1. Check self against the skip list, add self to it, calculate the sum of all reagents
         float value = this.EvaluateSelf(skip, filter);
 
-        TreeLog("# Reaction<"+this.Id+"> " + GetReactiveName(product) + " evaluation, reaction price: " + value, +1);
+        TreeLog("# "+GetReactionName(this)+" " + GetReactiveName(product) + " evaluation, coefficient "+this.Coefficient+" reaction price: " + value, +1);
 
         // 2. If invalid state received, push it up
         //    If there is only one product on the output, just push up the full value as well
         if (value < 0.0f || 1 >= this.Products.length) {
-            TreeLog("$ Reaction<"+this.Id+"> " + GetReactiveName(product) + " is the only product, price: " + value, -1);
+            TreeLog("$ "+GetReactionName(this)+" " + GetReactiveName(product) + " is the only product, price: " + value, -1);
             return value;
         }
 
@@ -373,26 +447,26 @@ class Reaction : Reactive
         }
         // 4.2 If summ is zero, push up the whole value
         if (summ < 0.0f) {
-            TreeLog("$ Reaction<"+this.Id+"> " + GetReactiveName(product) + " evaluation failed", -1);
+            TreeLog("$ "+GetReactionName(this)+" " + GetReactiveName(product) + " evaluation failed", -1);
             return value;
         }
 
         // 4.3 Multitply seeked product "own value" by total value and divide it by summ of "own' values"
         float productValue = product.EvaluateSelf();
         float result = productValue * value / summ;
-        TreeLog("$ Reaction<"+this.Id+"> " + GetReactiveName(product) + " price: " + productValue + " x "  + value + " / " + summ+" = "+result, -1);
+        TreeLog("$ "+GetReactionName(this)+" " + GetReactiveName(product) + " price: " + productValue + " x "  + value + " / " + summ+" = "+result, -1);
         return result;
     }
 
     void Dump() {
-        TreeLog("+ Reaction<"+this.Id+">", 1);
+        TreeLog("+ "+GetReactionName(this), 1);
         for (uint i = 0, l = this.Reagents.length; i < l; i++) {
             TreeLog("- " + GetReactiveName(this.Reagents[i]));
         }
         for (uint i = 0, l = this.Products.length; i < l; i++) {
             TreeLog("+ " + GetReactiveName(this.Products[i]));
         }
-        TreeLog("- Reaction<"+this.Id+">", -1);
+        TreeLog("- "+GetReactionName(this), -1);
     }
 }
 
@@ -551,8 +625,8 @@ class CraftTree
         return this.ItemCache[pid];
     }
 
-    Reaction@ GetReaction(uint id, float coefficient = 1.0f, float weight = 0.0f) {
-        Reaction reaction(id, coefficient, weight);
+    Reaction@ GetReaction(uint id, uint group, float coefficient = 1.0f, float weight = 0.0f) {
+        Reaction reaction(id, group, coefficient, weight);
         return reaction;
     }
 
@@ -572,6 +646,7 @@ class CraftTree
     }
 
     CraftTree() {
+        uint newRecipeId = 0;
         for (uint recipeId = 0, overflow = 0; recipeId <= UINT_MAX && overflow < 1000; recipeId++) {
             CraftItem@ recipe = GetCraftItem(recipeId);
           
@@ -587,62 +662,19 @@ class CraftTree
             array<int> statValues;
             array<bool> statOrs;
             recipe.GetNeedParams(statIds, statValues, statOrs);
-            array<array<uint>> statGroups;
-            array<uint> statGroup;
-            for (uint i = 0; i < statOrs.length && i < statIds.length; i++) {
-                statGroup.insertLast(i);
-
-                if (statOrs[i]) {
-                    if (statGroup.length > 0) {
-                        statGroups.insertLast(statGroup);
-                    }
-                    statGroup.resize(0);
-                }
-            }
-            if (statGroup.length > 0) {
-                statGroups.insertLast(statGroup);
-            }
+            array<array<uint>> statGroups = GetGroupsFromOrs(statIds, statOrs);
 
             array<uint16> toolPids;
             array<uint> toolCounts;
             array<bool> toolOrs;
             recipe.GetNeedTools(toolPids, toolCounts, toolOrs);
-            array<array<uint>> toolGroups;
-            array<uint> toolGroup;
-            for (uint i = 0; i < toolOrs.length && i < toolPids.length; i++) {
-                toolGroup.insertLast(i);
-
-                if (toolOrs[i]) {
-                    if (toolGroup.length > 0) {
-                        toolGroups.insertLast(toolGroup);
-                    }
-                    toolGroup.resize(0);
-                }
-            }
-            if (toolGroup.length > 0) {
-                toolGroups.insertLast(toolGroup);
-            }
+            array<array<uint>> toolGroups = GetGroupsFromOrs(toolPids, toolOrs);
 
             array<uint16> componentPids;
             array<uint> componentCounts;
             array<bool> componentOrs; // if componentOrs[1] == true it means recipe is like "0 & 1 | 2"
             recipe.GetNeedItems(componentPids, componentCounts, componentOrs);
-            array<array<uint>> componentGroups;
-            array<uint> componentGroup;
-            for (uint i = 0; i < componentOrs.length && i < componentPids.length; i++) {
-                componentGroup.insertLast(i);
-
-                if (componentOrs[i]) {
-                    if (componentGroup.length > 0) {
-                        componentGroups.insertLast(componentGroup);
-                    }
-                    componentGroup.resize(0);
-                }
-            }
-            if (componentGroup.length > 0) {
-                componentGroups.insertLast(componentGroup);
-                componentGroup.resize(0);
-            }
+            array<array<uint>> componentGroups = GetGroupsFromOrs(componentPids, componentOrs);
 
             array<uint16> productPids;
             array<uint> productCounts;
@@ -655,7 +687,7 @@ class CraftTree
                     for (uint s = 0; s < statGroups.length; s++) {
 
                         // Spawn a new recipe
-                        Reaction@ reaction = this.GetReaction(recipeId, 1.2, 0.0);
+                        Reaction@ reaction = this.GetReaction(newRecipeId++, recipeId, 1.2, 0.0);
 
                         // Add products
                         for (uint i = 0, l = productPids.length; i < l; i++) {
@@ -688,6 +720,11 @@ class CraftTree
                                 1
                             );
                         }
+
+                        // CUSTOM: if there are only one type of component, use 1.1 coefficient
+                        if (productPids.length == 1) {
+                            reaction.Coefficient = 1.1;
+                        }
                     }
                 }
             }
@@ -715,7 +752,7 @@ void LoadItemTree() // EXPORT
     for (;i < furnace.length; i++) {
         // in_type in_count out_type out_count
         if (4 == furnace[i].length) {
-            Reaction@ reaction = tree.GetReaction(UINT_MAX - i, 1.2, 0.0);
+            Reaction@ reaction = tree.GetReaction(UINT_MAX - i, UINT_MAX, 1.2, 0.0);
 
             reaction.AddReagents(tree.GetItemReagent(furnace[i][0]), furnace[i][1]);
             reaction.AddProducts(tree.GetItemReagent(furnace[i][2]), furnace[i][3]);
